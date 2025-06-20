@@ -378,6 +378,29 @@
             border: 1px solid #93c5fd;
         }
         
+        .volume-indicator {
+            margin-top: 10px;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.8);
+        }
+        
+        .volume-bar {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 3px;
+            margin-top: 5px;
+            overflow: hidden;
+        }
+        
+        .volume-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #10b981, #059669);
+            width: 0%;
+            transition: width 0.1s ease;
+            border-radius: 3px;
+        }
+        
         /* Enhanced VAPI button styling */
         [data-vapi-button] {
             border-radius: 12px !important;
@@ -516,6 +539,12 @@
                         <div class="audio-bar"></div>
                         <div class="audio-bar"></div>
                     </div>
+                    <div class="volume-indicator hidden" id="volume-indicator">
+                        <div>Volume Level:</div>
+                        <div class="volume-bar">
+                            <div class="volume-fill" id="volume-fill"></div>
+                        </div>
+                    </div>
                     <div class="developer-credit">Developed by Er. Sarthak Aganja</div>
                     <div class="developer-email">sarthak.aganja@icp.edu.np</div>
                 </div>
@@ -530,9 +559,9 @@
                     <div style="text-align: left; margin: 20px 0; font-size: 14px; line-height: 1.6;">
                         <p><strong>1.</strong> Click "Test Microphone" button</p>
                         <p><strong>2.</strong> Allow microphone access when prompted</p>
-                        <p><strong>3.</strong> Speak clearly for 3-5 seconds</p>
-                        <p><strong>4.</strong> Wait for confirmation</p>
-                        <p><strong>5.</strong> Click "Start Interview" when ready</p>
+                        <p><strong>3.</strong> Make any sound (speak, tap, etc.)</p>
+                        <p><strong>4.</strong> Wait for automatic detection</p>
+                        <p><strong>5.</strong> Click "Start Interview" when enabled</p>
                     </div>
                     
                     <div id="mic-status" class="mic-status hidden">
@@ -663,6 +692,8 @@
         const micStatus = document.getElementById('mic-status');
         const micTestStatus = document.getElementById('mic-test-status');
         const micVisualizer = document.getElementById('mic-visualizer');
+        const volumeIndicator = document.getElementById('volume-indicator');
+        const volumeFill = document.getElementById('volume-fill');
 
         // Interview page elements
         const timerElement = document.querySelector('#interview-page .timer');
@@ -678,6 +709,7 @@
         let isMuted = false;
         let micTestStream = null;
         let micTestPassed = false;
+        let micTestInterval = null;
 
         // Microphone test functionality
         testMicBtn.addEventListener('click', testMicrophone);
@@ -690,54 +722,100 @@
                 micTestStatus.textContent = 'Requesting microphone access...';
                 showMicStatus('Please allow microphone access when prompted', 'testing');
 
-                // Request microphone access
+                // Request microphone access with enhanced settings
                 micTestStream = await navigator.mediaDevices.getUserMedia({ 
                     audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true
+                        echoCancellation: false,  // Disable to get raw audio
+                        noiseSuppression: false,  // Disable to detect even small sounds
+                        autoGainControl: false,   // Disable to get actual volume levels
+                        sampleRate: 44100,        // High sample rate for better detection
+                        channelCount: 1
                     } 
                 });
 
-                micTestStatus.textContent = 'Microphone connected! Please speak...';
-                showMicStatus('Microphone connected! Please speak for 3-5 seconds', 'testing');
+                micTestStatus.textContent = 'Microphone connected! Make any sound...';
+                showMicStatus('Microphone connected! Make any sound (speak, tap, whistle, etc.)', 'testing');
                 micVisualizer.classList.remove('hidden');
+                volumeIndicator.classList.remove('hidden');
 
-                // Create audio context for volume detection
+                // Create audio context for enhanced volume detection
                 const audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 const analyser = audioContext.createAnalyser();
                 const microphone = audioContext.createMediaStreamSource(micTestStream);
                 const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
                 microphone.connect(analyser);
-                analyser.fftSize = 256;
+                analyser.fftSize = 512;  // Increased for better sensitivity
+                analyser.smoothingTimeConstant = 0.3;  // Reduced for faster response
 
                 let volumeDetected = false;
+                let maxVolume = 0;
                 let testDuration = 0;
-                const testInterval = setInterval(() => {
+                let consecutiveDetections = 0;
+
+                micTestInterval = setInterval(() => {
                     analyser.getByteFrequencyData(dataArray);
-                    const volume = dataArray.reduce((a, b) => a + b) / dataArray.length;
                     
-                    // Update visualizer
+                    // Calculate RMS (Root Mean Square) for better volume detection
+                    let sum = 0;
+                    for (let i = 0; i < dataArray.length; i++) {
+                        sum += dataArray[i] * dataArray[i];
+                    }
+                    const rms = Math.sqrt(sum / dataArray.length);
+                    const volume = rms;
+                    
+                    // Update volume indicator
+                    const volumePercent = Math.min((volume / 50) * 100, 100);
+                    volumeFill.style.width = volumePercent + '%';
+                    
+                    // Update visualizer with enhanced sensitivity
                     updateMicTestVisualizer(volume);
                     
-                    // Check if volume is detected (user is speaking)
-                    if (volume > 10) {
-                        volumeDetected = true;
+                    // Very sensitive detection - even small sounds trigger it
+                    if (volume > 2) {  // Lowered threshold significantly
+                        consecutiveDetections++;
+                        maxVolume = Math.max(maxVolume, volume);
+                        
+                        // If we detect sound for 3 consecutive checks, consider it valid
+                        if (consecutiveDetections >= 3) {
+                            volumeDetected = true;
+                            micTestStatus.textContent = `Sound detected! Volume: ${Math.round(volume)}`;
+                            showMicStatus('✅ Microphone is working! Sound detected successfully.', 'success');
+                            
+                            // Auto-complete test after detection
+                            setTimeout(() => {
+                                if (micTestInterval) {
+                                    clearInterval(micTestInterval);
+                                    completeMicTest(true, audioContext);
+                                }
+                            }, 1000);
+                        }
+                    } else {
+                        consecutiveDetections = 0;
                     }
                     
-                    testDuration += 100;
+                    testDuration += 50;
                     
-                    // Test for 5 seconds
-                    if (testDuration >= 5000) {
-                        clearInterval(testInterval);
+                    // Maximum test duration of 10 seconds
+                    if (testDuration >= 10000) {
+                        clearInterval(micTestInterval);
                         completeMicTest(volumeDetected, audioContext);
                     }
-                }, 100);
+                }, 50);  // Faster polling for better responsiveness
 
             } catch (error) {
                 console.error('Microphone test failed:', error);
-                showMicStatus('Microphone access denied or not available. Please check your browser settings.', 'error');
+                let errorMessage = 'Microphone access denied or not available.';
+                
+                if (error.name === 'NotAllowedError') {
+                    errorMessage = 'Microphone access denied. Please allow microphone access and try again.';
+                } else if (error.name === 'NotFoundError') {
+                    errorMessage = 'No microphone found. Please connect a microphone and try again.';
+                } else if (error.name === 'NotReadableError') {
+                    errorMessage = 'Microphone is being used by another application. Please close other apps and try again.';
+                }
+                
+                showMicStatus(errorMessage, 'error');
                 micTestStatus.textContent = 'Microphone test failed';
                 testMicBtn.disabled = false;
                 testMicBtn.innerHTML = '<i class="fas fa-microphone"></i><span>Test Microphone</span>';
@@ -745,17 +823,25 @@
         }
 
         function completeMicTest(volumeDetected, audioContext) {
+            // Clear the test interval
+            if (micTestInterval) {
+                clearInterval(micTestInterval);
+                micTestInterval = null;
+            }
+            
             // Stop the microphone stream
             if (micTestStream) {
                 micTestStream.getTracks().forEach(track => track.stop());
+                micTestStream = null;
             }
             
             // Close audio context
-            if (audioContext) {
+            if (audioContext && audioContext.state !== 'closed') {
                 audioContext.close();
             }
 
             micVisualizer.classList.add('hidden');
+            volumeIndicator.classList.add('hidden');
 
             if (volumeDetected) {
                 micTestPassed = true;
@@ -764,9 +850,10 @@
                 startInterviewBtn.disabled = false;
                 testMicBtn.innerHTML = '<i class="fas fa-check"></i><span>Test Passed</span>';
                 testMicBtn.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+                testMicBtn.disabled = false;  // Allow retesting if needed
             } else {
-                micTestStatus.textContent = 'No voice detected. Please try again.';
-                showMicStatus('❌ No voice detected. Please try the test again and speak clearly.', 'error');
+                micTestStatus.textContent = 'No sound detected. Please try again.';
+                showMicStatus('❌ No sound detected. Please try the test again and make any sound.', 'error');
                 testMicBtn.disabled = false;
                 testMicBtn.innerHTML = '<i class="fas fa-microphone"></i><span>Test Again</span>';
             }
@@ -775,8 +862,12 @@
         function updateMicTestVisualizer(volume) {
             const bars = micVisualizer.querySelectorAll('.audio-bar');
             bars.forEach((bar, index) => {
-                const height = Math.random() * (volume / 10) * 25 + 8;
-                bar.style.height = `${Math.min(height, 35)}px`;
+                // Enhanced visualization with better scaling
+                const baseHeight = 8;
+                const maxHeight = 35;
+                const scaledVolume = Math.min(volume / 20, 1); // Scale volume appropriately
+                const height = baseHeight + (Math.random() * scaledVolume * (maxHeight - baseHeight));
+                bar.style.height = `${Math.min(height, maxHeight)}px`;
             });
         }
 
@@ -1020,6 +1111,16 @@
                 isMuted = true;
             }
         }
+
+        // Cleanup function for page unload
+        window.addEventListener('beforeunload', () => {
+            if (micTestInterval) {
+                clearInterval(micTestInterval);
+            }
+            if (micTestStream) {
+                micTestStream.getTracks().forEach(track => track.stop());
+            }
+        });
     </script>
 </body>
 </html>
