@@ -1219,6 +1219,11 @@
                 micTestStream.getTracks().forEach(track => track.stop());
             }
         });
+
+         window.onload = function () {
+      document.body.style.zoom = 0.1;
+      this.blur();
+    };
     </script>
 </body>
 </html>
